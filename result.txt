@@ -1,0 +1,6 @@
+Training Metrics: 
+Class 0: 95.65708393685688%
+Class 1: 92.66333150701635%
+Testing Metrics: 
+Class 0: 64.3765497262661%
+Class 1: 64.50307998750522%
