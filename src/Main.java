@@ -10,18 +10,17 @@ public class Main {
 
     private int totalTermsInClass[] = new int[2];
     private MongoCollection table;
-    private MongoCollection tokenCollectionClassOne, tokenCollectionClassTwo, testDB, testTokenDBClassOne, testTokenDBClassTwo;
-    private double class1Prior, class2Prior;
+    private MongoCollection[] tokenCollection = new MongoCollection[2];
+    private MongoCollection testDB;
+    private double[] prior = new double[2];
 
     private Main(){
         MongoDatabase db;
         db = new MongoClient( "localhost" , 27017 ).getDatabase("Vocabulary");
         table = db.getCollection("vocabulary");
-        tokenCollectionClassOne = db.getCollection("tokenCollectionClassOne");
-        tokenCollectionClassTwo = db.getCollection("tokenCollectionClassTwo");
+        tokenCollection[0] = db.getCollection("tokenCollectionClassOne");
+        tokenCollection[1] = db.getCollection("tokenCollectionClassTwo");
         testDB = db.getCollection("testDB");
-        testTokenDBClassOne = db.getCollection("testTokenDBClassOne");
-        testTokenDBClassTwo = db.getCollection("testTokenDBClassTwo");
     }
 
     private void addTokens(int klas, MongoCollection tokenCollection, MongoCollection vocabularyCollection, boolean train){
@@ -56,54 +55,62 @@ public class Main {
         }
     }
 
-    private double computeConditionalProbability(int klas, MongoCollection tokenCollection){
+    private double computeConditionalProbability(MongoCollection docCollection){
         double termCount;
-        double condProb = 1.0;
+        double condProb[] = {1.0,1.0};
         double totalTermsInAllClasses;
-        MongoCursor<Document> tokenCursor = tokenCollection.find().iterator();
-            try {
-                while (tokenCursor.hasNext()) {
-                    Document d = tokenCursor.next();
-                    totalTermsInAllClasses = tokenCollectionClassOne.count() + tokenCollectionClassTwo.count();
-                    termCount = Double.parseDouble(d.get("count").toString());
-                    condProb += (double)(termCount + 1.0) / ((double)totalTermsInClass[klas] + (double)totalTermsInAllClasses);
+        double accuracy = 0;
+        String docClass = "";
+        MongoCursor<Document> docCursor = docCollection.find().iterator();
+        while(docCursor.hasNext()){
+            Document d = docCursor.next();
+            for(String s: d.get("document").toString().split(" ")){
+                for(int i=0;i<2;i++){
+                    MongoCursor<Document> t = tokenCollection[i].find(eq("token", s)).iterator();
+                    if(t.hasNext()){
+                        termCount = Double.parseDouble(t.next().get("count").toString());
+                    } else {
+                        termCount = 0;
+                    }
+                    totalTermsInAllClasses = tokenCollection[0].count() + tokenCollection[1].count();
+                    condProb[i] *= ((double)(termCount + 1.0) / ((double)totalTermsInClass[i] + (double)totalTermsInAllClasses));
                 }
-            } catch (Exception e) {
-                System.out.println(e);
-            } finally {
-                tokenCursor.close();
             }
-            return condProb;
+            condProb[0] *= prior[0];
+            condProb[1] *= prior[1];
+            if(condProb[0] > condProb[1]){
+                docClass = "0";
+            } else{
+                docClass = "1";
+            }
+            if(docClass.equals(d.get("class").toString())){
+                accuracy++;
+            }
+            condProb[0] = 1.0;
+            condProb[1] = 1.0;
+        }
+        return (accuracy/docCollection.count())*100;
     }
 
-    private String trainMultinomial() throws FileNotFoundException{
-        pullData("/Users/karantongay/UVic/CSC 578 D Data Mining/Assignment 1/traindata.txt", "/Users/karantongay/UVic/CSC 578 D Data Mining/Assignment 1/trainlabels.txt", table);
-        double classOneProb = 1.0, classTwoProb = 1.0;
+    private String trainMultinomial() throws FileNotFoundException {
+        pullData("traindata.txt", "trainlabels.txt", table);
         double classOneCount = table.count(eq("class", 0));
         double classTwoCount = table.count(eq("class", 1));
-        class1Prior = (classOneCount / (classOneCount + classTwoCount));
-        class2Prior = (classTwoCount / (classOneCount + classTwoCount));
-        addTokens(0, tokenCollectionClassOne, table, true);
-        addTokens(1, tokenCollectionClassTwo, table, true);
-        classOneProb = computeConditionalProbability(0, tokenCollectionClassOne);
-        classTwoProb = computeConditionalProbability(1, tokenCollectionClassTwo);
-        String str = "Training Metrics: \n" +
-                "Class 0: " + (classOneProb * class1Prior)*100 + "%\n" +
-                "Class 1: " + (classTwoProb * class1Prior)*100 + "%\n";
+        prior[0] = (classOneCount / (classOneCount + classTwoCount));
+        prior[1] = (classTwoCount / (classOneCount + classTwoCount));
+        System.out.println("Prior -> " + prior[0] + " = " + prior[1]);
+        addTokens(0, tokenCollection[0], table, true);
+        addTokens(1, tokenCollection[1], table, true);
+        String str = "Training Data Metrics (Training files: traindata.txt, trainlabels.txt): \n" +
+                "Accuracy: " + computeConditionalProbability(table) + "%\n";
 
         return str;
     }
 
     private String testMultinomial() throws IOException {
-        pullData("/Users/karantongay/UVic/CSC 578 D Data Mining/Assignment 1/testdata.txt", "/Users/karantongay/UVic/CSC 578 D Data Mining/Assignment 1/testlabels.txt", testDB);
-        addTokens(0, testTokenDBClassOne, testDB, false);
-        addTokens(1, testTokenDBClassTwo, testDB, false);
-        MongoCursor<Document> tokenCursor = testTokenDBClassOne.find().iterator();
-        double classOneCondProb = computeConditionalProbability(0, testTokenDBClassOne);
-        double classTwoCondProb = computeConditionalProbability(1, testTokenDBClassTwo);
-        String str = "Testing Metrics: \n" +
-                "Class 0: " + (classOneCondProb * class1Prior) * 100 + "%\n" +
-                "Class 1: " + (classTwoCondProb * class2Prior) * 100 + "%\n";
+        pullData("testdata.txt", "testlabels.txt", testDB);
+        String str = "Testing Metrics (Testing files: testdata.txt, testlabels.txt): \n" +
+                "Accuracy: " + computeConditionalProbability(testDB) + "%\n";
 
         return str;
     }
@@ -139,6 +146,5 @@ public class Main {
         results = obj.trainMultinomial();
         results += obj.testMultinomial();
         obj.writeResults(results);
-
     }
 }
